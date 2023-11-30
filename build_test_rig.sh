@@ -86,5 +86,5 @@ do
     ${SUBMISSION_VARIANT} -o ${SUBMISSION_VARIANT}.o
 
     # link together the test rig
-    ${CC} ${CFLAGS} ${HELPER_OBJS} ${TEST_RIG}.o ${OP_BASELINE_FILE}.ref.o ${SUBMISSION_VARIANT}.o -o ./run_${TEST_NAME}_${SUBMISSION_VARIANT}.x
+    ${CC} ${CFLAGS} ${HELPER_OBJS} ${TEST_RIG}.o ${OP_BASELINE_FILE}.ref.o ${SUBMISSION_VARIANT}.o -lm -o ./run_${TEST_NAME}_${SUBMISSION_VARIANT}.x
 done
