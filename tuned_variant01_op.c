@@ -41,6 +41,8 @@
 #include "helper.h"
 #include "pagerank.h"
 #include "sparse.h"
+#include "utils.c"
+#include <immintrin.h>
 
 #ifndef COMPUTE_NAME
 #define COMPUTE_NAME baseline
@@ -63,23 +65,88 @@
 #endif
 
 /*
+Returns an array of indices where each value represents a change of index in in_array.
+Example:
+in_array = [0,0,0,1,1,2,2]
+returns [3,5]
+*/
+int *findIndexChanges(int *in_array, int in_size, int *num_changes)
+{
+	int *change_indices = NULL;
+	*(num_changes) = 0;
+
+	for (int i = 1; i < in_size; ++i)
+	{
+		if (in_array[i] != in_array[i - 1])
+		{
+			// Change in i value found
+			change_indices = realloc(change_indices, (*num_changes + 1) * sizeof(int));
+			change_indices[*num_changes] = i;
+			(*num_changes)++;
+		}
+	}
+	return change_indices;
+}
+
+/*
+https://stackoverflow.com/questions/13219146/how-to-sum-m256-horizontally
+*/
+float sum8(__m256 x)
+{
+	// hiQuad = ( x7, x6, x5, x4 )
+	const __m128 hiQuad = _mm256_extractf128_ps(x, 1);
+	// loQuad = ( x3, x2, x1, x0 )
+	const __m128 loQuad = _mm256_castps256_ps128(x);
+	// sumQuad = ( x3 + x7, x2 + x6, x1 + x5, x0 + x4 )
+	const __m128 sumQuad = _mm_add_ps(loQuad, hiQuad);
+	// loDual = ( -, -, x1 + x5, x0 + x4 )
+	const __m128 loDual = sumQuad;
+	// hiDual = ( -, -, x3 + x7, x2 + x6 )
+	const __m128 hiDual = _mm_movehl_ps(sumQuad, sumQuad);
+	// sumDual = ( -, -, x1 + x3 + x5 + x7, x0 + x2 + x4 + x6 )
+	const __m128 sumDual = _mm_add_ps(loDual, hiDual);
+	// lo = ( -, -, -, x0 + x2 + x4 + x6 )
+	const __m128 lo = sumDual;
+	// hi = ( -, -, -, x1 + x3 + x5 + x7 )
+	const __m128 hi = _mm_shuffle_ps(sumDual, sumDual, 0x1);
+	// sum = ( -, -, -, x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7 )
+	const __m128 sum = _mm_add_ss(lo, hi);
+	return _mm_cvtss_f32(sum);
+}
+
+/*
+Prints reference/test arrays side by side in text files
+*/
+static void printTestDiff(multiformat_graph_t *multiformat_graph_distributed,
+			  pagerank_data_t *pagerank_data_distributed)
+{
+	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
+	float *reference = calloc(multiformat_graph_distributed->m, sizeof(float));
+	FILE *file = fopen("test.txt", "w");
+	for (int cur_pos = 0; cur_pos < graph->nnz; ++cur_pos)
+	{
+		int i = graph->row_idx[cur_pos];
+		int j = graph->col_idx[cur_pos];
+		fprintf(file, "%d %d %d\n", cur_pos, i, j);
+		float val = graph->values[cur_pos];
+		reference[i] += val * pagerank_data_distributed->x[j];
+	}
+	fclose(file);
+	printDistributedDiff(reference, pagerank_data_distributed->y, multiformat_graph_distributed->m,
+			     "test_compare.txt");
+	printDistributedOutput2(reference, pagerank_data_distributed->y, multiformat_graph_distributed->m,
+				"test_compare2.txt");
+	free(reference);
+}
+
+/*
   This operation performs a matrix vector multiplication, where the matrix is
   sparse and the vectors are dense. This implementation is using the Coordinate (COO)
   format, but it can (and should be) changed to a format that best fits the data
   and the hardware (for example CSR, CSC, BCSR, etc).
-
 */
 static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-	/*
-	  STUDENT_TODO: If this is not the baseline feel free to use a different
-			sparse format (COO,CSR,CSC,BCSR) for the matrix-vector
-			product. This operation is also where you will be doing
-			a lot of your optimizations and parallel transformations.
-	*/
-
-	// Note: this is a Coordinate (COO) implementation of matrix-vector multiply
-	//       but it could be any other format.
 	for (int cur_pos = 0; cur_pos < multiformat_graph_distributed->graph_view_coo->nnz; ++cur_pos)
 	{
 		int i = multiformat_graph_distributed->graph_view_coo->row_idx[cur_pos];
@@ -90,33 +157,75 @@ static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_
 	}
 }
 
+void baseline_matrix_mul(int start, int end, multiformat_graph_t *graph, pagerank_data_t *pagerank)
+{
+	for (int cur_pos = start; cur_pos < end; ++cur_pos)
+	{
+		int row_idx = graph->graph_view_coo->row_idx[cur_pos];
+		int col_idx = graph->graph_view_coo->col_idx[cur_pos];
+		float val = graph->graph_view_coo->values[cur_pos];
+		pagerank->y[row_idx] += val * pagerank->x[col_idx];
+	}
+}
+
+static void matvec_test(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed,
+			int *changes, int num_changes)
+{
+	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
+
+	int start = 0;
+	int end_SIMD = 0;
+	int end = 0;
+
+	for (int i = 0; i < num_changes; ++i)
+	{
+		start = end;
+		end = changes[i];
+		int consecutive = end - start;
+		if (consecutive < 8)
+			end_SIMD = start;
+		else
+			end_SIMD = start + (consecutive - (consecutive % 8));
+
+		// printf("%d %d %d %d %d\n", i, start, end_SIMD, start_regular, end);
+
+		// The value of graph->row_idx[cur_pos] is the same for 8+ consecutive values; Can use simd
+		for (int cur_pos = start; cur_pos < end_SIMD; cur_pos += 8)
+		{
+			int row_idx = graph->row_idx[cur_pos];
+			__m256i j_vector = _mm256_loadu_si256((__m256i *)&graph->col_idx[cur_pos]);
+			__m256 value_vector = _mm256_loadu_ps(&graph->values[cur_pos]);
+			__m256 x_values = _mm256_i32gather_ps(pagerank_data_distributed->x, j_vector, sizeof(float));
+			//__m256 result_vector = _mm256_loadu_ps(&pagerank_data_distributed->y[idx]);
+			// result_vector = _mm256_fmadd_ps(value_vector, x_values, result_vector);
+			//_mm256_storeu_ps(pagerank_data_distributed->y, result_vector);
+			pagerank_data_distributed->y[row_idx] += sum8(_mm256_mul_ps(x_values, value_vector));
+		}
+		// remaining leftover from the block
+		baseline_matrix_mul(end_SIMD, end, multiformat_graph_distributed, pagerank_data_distributed);
+	}
+	// handle the last value of end to NNZ since num_changes will be 1 less than m
+	baseline_matrix_mul(end, graph->nnz, multiformat_graph_distributed, pagerank_data_distributed);
+
+	// printTestDiff(multiformat_graph_distributed, pagerank_data_distributed);
+}
+
 /*
   This function iteratively performs a matrix-vector product to compute
   the PageRank of a graph. Mathematically it is performing:
      x_{n-1} = A^{n} x_{0}
-
   where n is the number of iterations, x_{n-1} is the final ranking and
   x_{0} is a random vector.
-
   In this implementation, we keep two vector x and y that point to two halves
   of a buffer, and we ping pong at each iteration by pointing them to a different
   half of the buffer.
-
-
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
+	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
+	int num_changes = 0;
 
-	////////////////////////////////////
-	// The bulk of the computation    //
-	// This is what will be optimized //
-	////////////////////////////////////
-	/*
-	  STUDENT_TODO: If this is not the baseline feel free to use a different
-			sparse format (COO,CSR,CSC,BCSR) for the matrix-vector
-			product. This operation is also where you will be doing
-			a lot of your optimizations and parallel transformations.
-	*/
+	int *changes = findIndexChanges(graph->row_idx, graph->nnz, &num_changes);
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
 		////////////////////////////////////////////////////////////////////////////
@@ -133,10 +242,7 @@ static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagera
 		for (int i = 0; i < multiformat_graph_distributed->m; ++i)
 			pagerank_data_distributed->y[i] = 0.0f;
 
-		////////////////////////////
-		// Matrix vector multiply //
-		////////////////////////////
-		matvec(multiformat_graph_distributed, pagerank_data_distributed);
+		matvec_test(multiformat_graph_distributed, pagerank_data_distributed, changes, num_changes);
 
 #if DEBUG
 		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,

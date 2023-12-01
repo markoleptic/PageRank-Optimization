@@ -7,11 +7,11 @@
                 "/usr/lib/x86_64-linux-gnu/openmpi/include"
             ],
             "defines": [],
-            "compilerPath": "/usr/bin/gcc",
-            "cStandard": "c17",
+            "compilerPath": "/usr/bin/gcc"
+            /*"cStandard": "c17",
             "cppStandard": "gnu++14",
             "intelliSenseMode": "linux-gcc-x64",
-            "configurationProvider": "ms-vscode.makefile-tools"
+            "configurationProvider": "ms-vscode.makefile-tools"*/
         }
     ],
     "version": 4
