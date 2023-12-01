@@ -64,34 +64,86 @@
 #define DISTRIBUTED_FREE_NAME baseline_free
 #endif
 
-/*
-Returns an array of indices where each value represents a change of index in in_array.
-Example:
-in_array = [0,0,0,1,1,2,2]
-returns [3,5]
-*/
-int *findIndexChanges(int *in_array, int in_size, int *num_changes)
+static void printIndices(const indices *ind)
 {
-	int *change_indices = NULL;
-	*(num_changes) = 0;
+	printf("Regular Indices:\n");
+	for (int i = 0; i < ind->reg_size; ++i)
+	{
+		printf("Start: %d, End: %d\n", ind->reg_indices[i].start, ind->reg_indices[i].end);
+	}
+
+	printf("SIMD Indices:\n");
+	for (int i = 0; i < ind->simd_size; ++i)
+	{
+		printf("Start: %d, End: %d\n", ind->simd_indices[i].start, ind->simd_indices[i].end);
+	}
+}
+
+static void add_index(indices *in, int bReg)
+{
+	if (bReg == 1)
+	{
+		in->reg_indices = realloc(in->reg_indices, (in->reg_size + 1) * sizeof(reg_index));
+		in->reg_size += 1;
+	}
+	else
+	{
+		in->simd_indices = realloc(in->simd_indices, (in->simd_size + 1) * sizeof(simd_index));
+		in->simd_size += 1;
+	}
+}
+
+static void *findIndexChanges(indices *indices, int *in_array, int in_size)
+{
+	int start = 0;
+	int end = 0;
+	indices->reg_size = 0;
+	indices->simd_size = 0;
 
 	for (int i = 1; i < in_size; ++i)
 	{
 		if (in_array[i] != in_array[i - 1])
 		{
-			// Change in i value found
-			change_indices = realloc(change_indices, (*num_changes + 1) * sizeof(int));
-			change_indices[*num_changes] = i;
-			(*num_changes)++;
+			start = end;
+			end = i;
+			int consecutive = end - start;
+			if (consecutive < 8)
+			{
+				add_index(indices, 1);
+				int idx = indices->reg_size - 1;
+				indices->reg_indices[idx].start = start;
+				indices->reg_indices[idx].end = end;
+			}
+			else
+			{
+				int simd_end = (start + (consecutive - (consecutive % 8)));
+				int num_to_add = (simd_end - start) / 8;
+
+				for (int j = 0; j < num_to_add; ++j)
+				{
+					add_index(indices, 0);
+					int idx = indices->simd_size - 1;
+					indices->simd_indices[idx].start = start + j * 8;
+					indices->simd_indices[idx].end = indices->simd_indices[idx].start + 8;
+				}
+
+				if (consecutive > simd_end - start)
+				{
+					add_index(indices, 1);
+					int reg_idx = indices->reg_size - 1;
+					indices->reg_indices[reg_idx].start =
+					    indices->simd_indices[indices->simd_size - 1].end;
+					indices->reg_indices[reg_idx].end = end;
+				}
+			}
 		}
 	}
-	return change_indices;
 }
 
 /*
 https://stackoverflow.com/questions/13219146/how-to-sum-m256-horizontally
 */
-float sum8(__m256 x)
+static float sum8(__m256 x)
 {
 	// hiQuad = ( x7, x6, x5, x4 )
 	const __m128 hiQuad = _mm256_extractf128_ps(x, 1);
@@ -152,12 +204,11 @@ static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_
 		int i = multiformat_graph_distributed->graph_view_coo->row_idx[cur_pos];
 		int j = multiformat_graph_distributed->graph_view_coo->col_idx[cur_pos];
 		float val = multiformat_graph_distributed->graph_view_coo->values[cur_pos];
-
 		pagerank_data_distributed->y[i] += val * pagerank_data_distributed->x[j];
 	}
 }
 
-void baseline_matrix_mul(int start, int end, multiformat_graph_t *graph, pagerank_data_t *pagerank)
+static void baseline_matrix_mul(int start, int end, multiformat_graph_t *graph, pagerank_data_t *pagerank)
 {
 	for (int cur_pos = start; cur_pos < end; ++cur_pos)
 	{
@@ -168,46 +219,39 @@ void baseline_matrix_mul(int start, int end, multiformat_graph_t *graph, pageran
 	}
 }
 
-static void matvec_test(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed,
-			int *changes, int num_changes)
+static void matvec_test(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
 	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
+	indices *indices = multiformat_graph_distributed->indices;
 
-	int start = 0;
-	int end_SIMD = 0;
-	int end = 0;
-
-	for (int i = 0; i < num_changes; ++i)
+	for (int i = 0; i < indices->simd_size; ++i)
 	{
-		start = end;
-		end = changes[i];
-		int consecutive = end - start;
-		if (consecutive < 8)
-			end_SIMD = start;
-		else
-			end_SIMD = start + (consecutive - (consecutive % 8));
-
-		// printf("%d %d %d %d %d\n", i, start, end_SIMD, start_regular, end);
-
-		// The value of graph->row_idx[cur_pos] is the same for 8+ consecutive values; Can use simd
-		for (int cur_pos = start; cur_pos < end_SIMD; cur_pos += 8)
-		{
-			int row_idx = graph->row_idx[cur_pos];
-			__m256i j_vector = _mm256_loadu_si256((__m256i *)&graph->col_idx[cur_pos]);
-			__m256 value_vector = _mm256_loadu_ps(&graph->values[cur_pos]);
-			__m256 x_values = _mm256_i32gather_ps(pagerank_data_distributed->x, j_vector, sizeof(float));
-			//__m256 result_vector = _mm256_loadu_ps(&pagerank_data_distributed->y[idx]);
-			// result_vector = _mm256_fmadd_ps(value_vector, x_values, result_vector);
-			//_mm256_storeu_ps(pagerank_data_distributed->y, result_vector);
-			pagerank_data_distributed->y[row_idx] += sum8(_mm256_mul_ps(x_values, value_vector));
-		}
-		// remaining leftover from the block
-		baseline_matrix_mul(end_SIMD, end, multiformat_graph_distributed, pagerank_data_distributed);
+		int cur_pos = indices->simd_indices[i].start;
+		__m256i j_vector = _mm256_loadu_si256((__m256i *)&graph->col_idx[cur_pos]);
+		__m256 value_vector = _mm256_loadu_ps(&graph->values[cur_pos]);
+		__m256 x_values = _mm256_i32gather_ps(pagerank_data_distributed->x, j_vector, sizeof(float));
+		//__m256 result_vector = _mm256_loadu_ps(&pagerank_data_distributed->y[idx]);
+		// result_vector = _mm256_fmadd_ps(value_vector, x_values, result_vector);
+		//_mm256_storeu_ps(pagerank_data_distributed->y, result_vector);
+		pagerank_data_distributed->y[graph->row_idx[cur_pos]] += sum8(_mm256_mul_ps(x_values, value_vector));
 	}
-	// handle the last value of end to NNZ since num_changes will be 1 less than m
-	baseline_matrix_mul(end, graph->nnz, multiformat_graph_distributed, pagerank_data_distributed);
 
-	// printTestDiff(multiformat_graph_distributed, pagerank_data_distributed);
+	for (int i = 0; i < indices->reg_size; ++i)
+	{
+		baseline_matrix_mul(indices->reg_indices[i].start, indices->reg_indices[i].end,
+				    multiformat_graph_distributed, pagerank_data_distributed);
+	}
+
+	if (indices->reg_indices[indices->reg_size - 1].end > indices->simd_indices[indices->simd_size - 1].end)
+	{
+		baseline_matrix_mul(indices->reg_indices[indices->reg_size - 1].end, graph->nnz,
+				    multiformat_graph_distributed, pagerank_data_distributed);
+	}
+	else
+	{
+		baseline_matrix_mul(indices->simd_indices[indices->simd_size - 1].end, graph->nnz,
+				    multiformat_graph_distributed, pagerank_data_distributed);
+	}
 }
 
 /*
@@ -222,10 +266,6 @@ static void matvec_test(multiformat_graph_t *multiformat_graph_distributed, page
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
-	int num_changes = 0;
-
-	int *changes = findIndexChanges(graph->row_idx, graph->nnz, &num_changes);
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
 		////////////////////////////////////////////////////////////////////////////
@@ -242,7 +282,7 @@ static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagera
 		for (int i = 0; i < multiformat_graph_distributed->m; ++i)
 			pagerank_data_distributed->y[i] = 0.0f;
 
-		matvec_test(multiformat_graph_distributed, pagerank_data_distributed, changes, num_changes);
+		matvec_test(multiformat_graph_distributed, pagerank_data_distributed);
 
 #if DEBUG
 		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,
@@ -423,6 +463,13 @@ void DISTRIBUTE_DATA_NAME(int num_vertices, int num_iterations, multiformat_grap
 		multiformat_graph_distributed->graph_view_csr = NULL;
 		multiformat_graph_distributed->graph_view_csc = NULL;
 		multiformat_graph_distributed->graph_view_bcsr = NULL;
+
+		multiformat_graph_distributed->indices = malloc(sizeof(indices));
+		multiformat_graph_distributed->indices->reg_indices = malloc(sizeof(reg_index));
+		multiformat_graph_distributed->indices->simd_indices = malloc(sizeof(simd_index));
+		findIndexChanges(multiformat_graph_distributed->indices,
+				 multiformat_graph_distributed->graph_view_coo->row_idx,
+				 multiformat_graph_distributed->graph_view_coo->nnz);
 	}
 	else
 	{
@@ -491,6 +538,9 @@ void DISTRIBUTED_FREE_NAME(int num_vertices, int num_iterations, multiformat_gra
 		// destroy_csr_matrix(multiformat_graph_distributed->graph_view_csr);
 		// destroy_csc_matrix(multiformat_graph_distributed->graph_view_csc);
 		// destroy_bcsr_matrix(multiformat_graph_distributed->graph_view_bcsr);
+		free(multiformat_graph_distributed->indices->reg_indices);
+		free(multiformat_graph_distributed->indices->simd_indices);
+		free(multiformat_graph_distributed->indices);
 
 		free(multiformat_graph_distributed->degree);
 		free(multiformat_graph_distributed);

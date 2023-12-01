@@ -26,7 +26,7 @@ OP_SUBMISSION_LIST="${OP_SUBMISSION_VAR01_FILE} ${OP_SUBMISSION_VAR02_FILE} ${OP
 ##########################################
 VAR_LOCAL_NUMRANKS=4
 VAR_LOCAL_MIN=64
-VAR_LOCAL_MAX=512
+VAR_LOCAL_MAX=1024
 VAR_LOCAL_STEP=64
 VAR_LOCAL_SCALE_M=1
 VAR_LOCAL_SCALE_K=-10
@@ -66,7 +66,7 @@ VAR_REMOTE_MODULE_MATPLOT="matplotlib/3.2.1-foss-2019b-Python-3.8.2"
 ######################################################
 CC=mpicc
 # CFLAGS="-std=c99 -O2"
-CFLAGS="-std=c99 -O2 -mavx2 -mfma -lm"
+CFLAGS="-std=c99 -O2 -mavx2 -mfma -lm -fopenmp"
 #CFLAGS="-std=c99 -O0 -mavx2 -g -mfma -lm"
 
 

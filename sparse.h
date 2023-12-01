@@ -14,6 +14,27 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+
+typedef struct simd_index_ts
+{
+	int start;
+	int end;
+} simd_index;
+
+typedef struct reg_index_ts
+{
+	int start;
+	int end;
+} reg_index;
+
+typedef struct indices_ts
+{
+	reg_index *reg_indices;
+	simd_index *simd_indices;
+	int reg_size;
+	int simd_size;
+} indices;
+
 typedef struct dense_matrix_ts
 {
 	int m;

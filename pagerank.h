@@ -27,6 +27,7 @@ typedef struct multiformat_graph_ts
 	csr_matrix_t *graph_view_csr;
 	csc_matrix_t *graph_view_csc;
 	bcsr_matrix_t *graph_view_bcsr;
+    indices *indices;
 } multiformat_graph_t;
 
 typedef struct pagerank_data_ts
