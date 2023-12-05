@@ -14,19 +14,30 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-
+/* 
+A pair of start, end indexes (row_idx array), 
+where end - start is always 8
+*/
 typedef struct simd_index_ts
 {
 	int start;
 	int end;
 } simd_index;
 
+/* 
+A pair of start & end indices (row_idx array), 
+where end - start is always < 8
+*/
 typedef struct reg_index_ts
 {
 	int start;
 	int end;
 } reg_index;
 
+/*
+Holds the reg_index and simd_index arrays. Split into 
+simd and regular in the split_indices function.
+*/
 typedef struct indices_ts
 {
 	reg_index *reg_indices;

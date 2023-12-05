@@ -64,194 +64,30 @@
 #define DISTRIBUTED_FREE_NAME baseline_free
 #endif
 
-static void printIndices(const indices *ind)
+static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_data, int num_threads)
 {
-	printf("Regular Indices:\n");
-	for (int i = 0; i < ind->reg_size; ++i)
-	{
-		printf("Start: %d, End: %d\n", ind->reg_indices[i].start, ind->reg_indices[i].end);
-	}
+	coo_matrix_t *graph_view = graph->graph_view_coo;
+	indices *indices = graph->indices;
 
-	printf("SIMD Indices:\n");
-	for (int i = 0; i < ind->simd_size; ++i)
-	{
-		printf("Start: %d, End: %d\n", ind->simd_indices[i].start, ind->simd_indices[i].end);
-	}
-}
+	int m = graph->m;
+	float *y_accumulated = (float *)malloc(m * sizeof(float));
+	for (int i = 0; i < m; ++i)
+		y_accumulated[i] = 0.0f;
 
-static void add_index(indices *in, int bReg)
-{
-	if (bReg == 1)
+#pragma omp parallel num_threads(num_threads)
 	{
-		in->reg_indices = realloc(in->reg_indices, (in->reg_size + 1) * sizeof(reg_index));
-		in->reg_size += 1;
-	}
-	else
-	{
-		in->simd_indices = realloc(in->simd_indices, (in->simd_size + 1) * sizeof(simd_index));
-		in->simd_size += 1;
-	}
-}
-
-static void *findIndexChanges(indices *indices, int *in_array, int in_size)
-{
-	int start = 0;
-	int end = 0;
-	indices->reg_size = 0;
-	indices->simd_size = 0;
-
-	for (int i = 1; i < in_size; ++i)
-	{
-		if (in_array[i] != in_array[i - 1])
+#pragma omp for reduction(+:y_accumulated[:m])
+		for (int cur_pos = 0; cur_pos < graph->graph_view_coo->nnz; ++cur_pos)
 		{
-			start = end;
-			end = i;
-			int consecutive = end - start;
-			if (consecutive < 8)
-			{
-				add_index(indices, 1);
-				int idx = indices->reg_size - 1;
-				indices->reg_indices[idx].start = start;
-				indices->reg_indices[idx].end = end;
-			}
-			else
-			{
-				int simd_end = (start + (consecutive - (consecutive % 8)));
-				int num_to_add = (simd_end - start) / 8;
-
-				for (int j = 0; j < num_to_add; ++j)
-				{
-					add_index(indices, 0);
-					int idx = indices->simd_size - 1;
-					indices->simd_indices[idx].start = start + j * 8;
-					indices->simd_indices[idx].end = indices->simd_indices[idx].start + 8;
-				}
-
-				if (consecutive > simd_end - start)
-				{
-					add_index(indices, 1);
-					int reg_idx = indices->reg_size - 1;
-					indices->reg_indices[reg_idx].start =
-					    indices->simd_indices[indices->simd_size - 1].end;
-					indices->reg_indices[reg_idx].end = end;
-				}
-			}
+			int i = graph_view->row_idx[cur_pos];
+			int j = graph_view->col_idx[cur_pos];
+			float val = graph_view->values[cur_pos];
+			y_accumulated[i] += val * pagerank_data->x[j];
 		}
 	}
-}
-
-/*
-https://stackoverflow.com/questions/13219146/how-to-sum-m256-horizontally
-*/
-static float sum8(__m256 x)
-{
-	// hiQuad = ( x7, x6, x5, x4 )
-	const __m128 hiQuad = _mm256_extractf128_ps(x, 1);
-	// loQuad = ( x3, x2, x1, x0 )
-	const __m128 loQuad = _mm256_castps256_ps128(x);
-	// sumQuad = ( x3 + x7, x2 + x6, x1 + x5, x0 + x4 )
-	const __m128 sumQuad = _mm_add_ps(loQuad, hiQuad);
-	// loDual = ( -, -, x1 + x5, x0 + x4 )
-	const __m128 loDual = sumQuad;
-	// hiDual = ( -, -, x3 + x7, x2 + x6 )
-	const __m128 hiDual = _mm_movehl_ps(sumQuad, sumQuad);
-	// sumDual = ( -, -, x1 + x3 + x5 + x7, x0 + x2 + x4 + x6 )
-	const __m128 sumDual = _mm_add_ps(loDual, hiDual);
-	// lo = ( -, -, -, x0 + x2 + x4 + x6 )
-	const __m128 lo = sumDual;
-	// hi = ( -, -, -, x1 + x3 + x5 + x7 )
-	const __m128 hi = _mm_shuffle_ps(sumDual, sumDual, 0x1);
-	// sum = ( -, -, -, x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7 )
-	const __m128 sum = _mm_add_ss(lo, hi);
-	return _mm_cvtss_f32(sum);
-}
-
-/*
-Prints reference/test arrays side by side in text files
-*/
-static void printTestDiff(multiformat_graph_t *multiformat_graph_distributed,
-			  pagerank_data_t *pagerank_data_distributed)
-{
-	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
-	float *reference = calloc(multiformat_graph_distributed->m, sizeof(float));
-	FILE *file = fopen("test.txt", "w");
-	for (int cur_pos = 0; cur_pos < graph->nnz; ++cur_pos)
-	{
-		int i = graph->row_idx[cur_pos];
-		int j = graph->col_idx[cur_pos];
-		fprintf(file, "%d %d %d\n", cur_pos, i, j);
-		float val = graph->values[cur_pos];
-		reference[i] += val * pagerank_data_distributed->x[j];
-	}
-	fclose(file);
-	printDistributedDiff(reference, pagerank_data_distributed->y, multiformat_graph_distributed->m,
-			     "test_compare.txt");
-	printDistributedOutput2(reference, pagerank_data_distributed->y, multiformat_graph_distributed->m,
-				"test_compare2.txt");
-	free(reference);
-}
-
-/*
-  This operation performs a matrix vector multiplication, where the matrix is
-  sparse and the vectors are dense. This implementation is using the Coordinate (COO)
-  format, but it can (and should be) changed to a format that best fits the data
-  and the hardware (for example CSR, CSC, BCSR, etc).
-*/
-static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
-{
-	for (int cur_pos = 0; cur_pos < multiformat_graph_distributed->graph_view_coo->nnz; ++cur_pos)
-	{
-		int i = multiformat_graph_distributed->graph_view_coo->row_idx[cur_pos];
-		int j = multiformat_graph_distributed->graph_view_coo->col_idx[cur_pos];
-		float val = multiformat_graph_distributed->graph_view_coo->values[cur_pos];
-		pagerank_data_distributed->y[i] += val * pagerank_data_distributed->x[j];
-	}
-}
-
-static void baseline_matrix_mul(int start, int end, multiformat_graph_t *graph, pagerank_data_t *pagerank)
-{
-	for (int cur_pos = start; cur_pos < end; ++cur_pos)
-	{
-		int row_idx = graph->graph_view_coo->row_idx[cur_pos];
-		int col_idx = graph->graph_view_coo->col_idx[cur_pos];
-		float val = graph->graph_view_coo->values[cur_pos];
-		pagerank->y[row_idx] += val * pagerank->x[col_idx];
-	}
-}
-
-static void matvec_test(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
-{
-	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
-	indices *indices = multiformat_graph_distributed->indices;
-
-	for (int i = 0; i < indices->simd_size; ++i)
-	{
-		int cur_pos = indices->simd_indices[i].start;
-		__m256i j_vector = _mm256_loadu_si256((__m256i *)&graph->col_idx[cur_pos]);
-		__m256 value_vector = _mm256_loadu_ps(&graph->values[cur_pos]);
-		__m256 x_values = _mm256_i32gather_ps(pagerank_data_distributed->x, j_vector, sizeof(float));
-		//__m256 result_vector = _mm256_loadu_ps(&pagerank_data_distributed->y[idx]);
-		// result_vector = _mm256_fmadd_ps(value_vector, x_values, result_vector);
-		//_mm256_storeu_ps(pagerank_data_distributed->y, result_vector);
-		pagerank_data_distributed->y[graph->row_idx[cur_pos]] += sum8(_mm256_mul_ps(x_values, value_vector));
-	}
-
-	for (int i = 0; i < indices->reg_size; ++i)
-	{
-		baseline_matrix_mul(indices->reg_indices[i].start, indices->reg_indices[i].end,
-				    multiformat_graph_distributed, pagerank_data_distributed);
-	}
-
-	if (indices->reg_indices[indices->reg_size - 1].end > indices->simd_indices[indices->simd_size - 1].end)
-	{
-		baseline_matrix_mul(indices->reg_indices[indices->reg_size - 1].end, graph->nnz,
-				    multiformat_graph_distributed, pagerank_data_distributed);
-	}
-	else
-	{
-		baseline_matrix_mul(indices->simd_indices[indices->simd_size - 1].end, graph->nnz,
-				    multiformat_graph_distributed, pagerank_data_distributed);
-	}
+    for (int i = 0; i < m; ++i)
+		pagerank_data->y[i] = y_accumulated[i];
+	free(y_accumulated);
 }
 
 /*
@@ -266,28 +102,22 @@ static void matvec_test(multiformat_graph_t *multiformat_graph_distributed, page
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
+	int thread_num = multiformat_graph_distributed->m > 1024 ? 4 : 2;
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
-		////////////////////////////////////////////////////////////////////////////
-		// Ping pong the buffers by changing the pointers                         //
-		// when t is even x[0..m-1] = buff[0..m-1] and y[0..m-1] = buff[m..2m-1]  //
-		// when t is odd  x[0..m-1] = buff[m..2m-1] and y[0..m-1] = buff[0..m-1]  //
-		////////////////////////////////////////////////////////////////////////////
 		pagerank_data_distributed->x =
 		    &(pagerank_data_distributed->buff[((t + 0) % 2) * multiformat_graph_distributed->m]);
 		pagerank_data_distributed->y =
 		    &(pagerank_data_distributed->buff[((t + 1) % 2) * multiformat_graph_distributed->m]);
 
-		// zero out the output y
 		for (int i = 0; i < multiformat_graph_distributed->m; ++i)
 			pagerank_data_distributed->y[i] = 0.0f;
 
-		matvec_test(multiformat_graph_distributed, pagerank_data_distributed);
+		matvec_openmp(multiformat_graph_distributed, pagerank_data_distributed, thread_num);
 
 #if DEBUG
 		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,
 						    pagerank_data_distributed->y);
-
 		printf("diff[%i]: %f\n", t, res);
 #endif
 	}
@@ -463,13 +293,6 @@ void DISTRIBUTE_DATA_NAME(int num_vertices, int num_iterations, multiformat_grap
 		multiformat_graph_distributed->graph_view_csr = NULL;
 		multiformat_graph_distributed->graph_view_csc = NULL;
 		multiformat_graph_distributed->graph_view_bcsr = NULL;
-
-		multiformat_graph_distributed->indices = malloc(sizeof(indices));
-		multiformat_graph_distributed->indices->reg_indices = malloc(sizeof(reg_index));
-		multiformat_graph_distributed->indices->simd_indices = malloc(sizeof(simd_index));
-		findIndexChanges(multiformat_graph_distributed->indices,
-				 multiformat_graph_distributed->graph_view_coo->row_idx,
-				 multiformat_graph_distributed->graph_view_coo->nnz);
 	}
 	else
 	{
@@ -538,9 +361,6 @@ void DISTRIBUTED_FREE_NAME(int num_vertices, int num_iterations, multiformat_gra
 		// destroy_csr_matrix(multiformat_graph_distributed->graph_view_csr);
 		// destroy_csc_matrix(multiformat_graph_distributed->graph_view_csc);
 		// destroy_bcsr_matrix(multiformat_graph_distributed->graph_view_bcsr);
-		free(multiformat_graph_distributed->indices->reg_indices);
-		free(multiformat_graph_distributed->indices->simd_indices);
-		free(multiformat_graph_distributed->indices);
 
 		free(multiformat_graph_distributed->degree);
 		free(multiformat_graph_distributed);

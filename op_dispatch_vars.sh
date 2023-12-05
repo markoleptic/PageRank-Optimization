@@ -4,11 +4,11 @@
 # CHANGE THESE LINES:                      #
 # Replace the filenames with your variants #
 ############################################
-OP_SUBMISSION_VAR01_FILE="tuned_variant01_op.c"
-OP_SUBMISSION_VAR02_FILE="tuned_variant02_op.c"
-OP_SUBMISSION_VAR03_FILE="tuned_variant03_op.c"  #########################################
-OP_SUBMISSION_VAR04_FILE="tuned_variant04_op.c"  # NOTE: If you add variants here, then  #
-OP_SUBMISSION_VAR05_FILE="tuned_variant05_op.c"  # append them to the OP_SUBMISSION_LIST #
+OP_SUBMISSION_VAR01_FILE="tuned_variant_simd.c"
+OP_SUBMISSION_VAR02_FILE="tuned_variant_openmp.c"
+OP_SUBMISSION_VAR03_FILE="tuned_variant_openmp_and_simd_1.c"  #########################################
+OP_SUBMISSION_VAR04_FILE="tuned_variant_openmp_and_simd_2.c"   # NOTE: If you add variants here, then  #
+OP_SUBMISSION_VAR05_FILE="tuned_variant05_op.c" # append them to the OP_SUBMISSION_LIST #
 # ..                                             #########################################
 #OP_SUBMISSION_VARXX_FILE="tuned_variantXX_op.c"
 
@@ -27,7 +27,7 @@ OP_SUBMISSION_LIST="${OP_SUBMISSION_VAR01_FILE} ${OP_SUBMISSION_VAR02_FILE} ${OP
 VAR_LOCAL_NUMRANKS=4
 VAR_LOCAL_MIN=64
 VAR_LOCAL_MAX=1024
-VAR_LOCAL_STEP=64
+VAR_LOCAL_STEP=32
 VAR_LOCAL_SCALE_M=1
 VAR_LOCAL_SCALE_K=-10
 VAR_LOCAL_OUTPUT_FILE_PREFIX=result_local
@@ -66,7 +66,7 @@ VAR_REMOTE_MODULE_MATPLOT="matplotlib/3.2.1-foss-2019b-Python-3.8.2"
 ######################################################
 CC=mpicc
 # CFLAGS="-std=c99 -O2"
-CFLAGS="-std=c99 -O2 -mavx2 -mfma -lm -fopenmp"
+CFLAGS="-std=c99 -O3 -mavx2 -mfma -lm -fopenmp"
 #CFLAGS="-std=c99 -O0 -mavx2 -g -mfma -lm"
 
 
