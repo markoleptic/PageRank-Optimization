@@ -113,5 +113,5 @@ elif [[ "${TEST_NAME}" == "bench" ]]; then
 
     fi
 
-    ./plotter_multi.py "Local Results" ${PLOT_NAME} `ls ${OUTPUT_FILE_LONG_PREFIX}_*.csv`
+    ./plotter_multi.py "Size vs Performance" ${PLOT_NAME} `ls ${OUTPUT_FILE_LONG_PREFIX}_*.csv`
 fi

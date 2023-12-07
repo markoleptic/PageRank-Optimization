@@ -41,6 +41,8 @@
 #include "helper.h"
 #include "pagerank.h"
 #include "sparse.h"
+#include "utils.c"
+#include <immintrin.h>
 
 #ifndef COMPUTE_NAME
 #define COMPUTE_NAME baseline
@@ -62,86 +64,57 @@
 #define DISTRIBUTED_FREE_NAME baseline_free
 #endif
 
-/*
-  This operation performs a matrix vector multiplication, where the matrix is
-  sparse and the vectors are dense. This implementation is using the Coordinate (COO)
-  format, but it can (and should be) changed to a format that best fits the data
-  and the hardware (for example CSR, CSC, BCSR, etc).
-
-*/
-static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
+static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_data, int num_threads)
 {
-	/*
-	  STUDENT_TODO: If this is not the baseline feel free to use a different
-			sparse format (COO,CSR,CSC,BCSR) for the matrix-vector
-			product. This operation is also where you will be doing
-			a lot of your optimizations and parallel transformations.
-	*/
+	coo_matrix_t *graph_view = graph->graph_view_coo;
+	indices *indices = graph->indices;
 
-	// Note: this is a Coordinate (COO) implementation of matrix-vector multiply
-	//       but it could be any other format.
-	for (int cur_pos = 0; cur_pos < multiformat_graph_distributed->graph_view_coo->nnz; ++cur_pos)
+	int m = graph->m;
+	float *y_accumulated = (float *)calloc(m, sizeof(float));
+
+#pragma omp parallel num_threads(num_threads)
 	{
-		int i = multiformat_graph_distributed->graph_view_coo->row_idx[cur_pos];
-		int j = multiformat_graph_distributed->graph_view_coo->col_idx[cur_pos];
-		float val = multiformat_graph_distributed->graph_view_coo->values[cur_pos];
-
-		pagerank_data_distributed->y[i] += val * pagerank_data_distributed->x[j];
+#pragma omp for reduction(+ : y_accumulated[:m])
+		for (int cur_pos = 0; cur_pos < graph->graph_view_coo->nnz; ++cur_pos)
+		{
+			int i = graph_view->row_idx[cur_pos];
+			int j = graph_view->col_idx[cur_pos];
+			float val = graph_view->values[cur_pos];
+			y_accumulated[i] += val * pagerank_data->x[j];
+		}
 	}
+	memcpy(pagerank_data->y, y_accumulated, m * sizeof(float));
+	free(y_accumulated);
 }
 
 /*
   This function iteratively performs a matrix-vector product to compute
   the PageRank of a graph. Mathematically it is performing:
      x_{n-1} = A^{n} x_{0}
-
   where n is the number of iterations, x_{n-1} is the final ranking and
   x_{0} is a random vector.
-
   In this implementation, we keep two vector x and y that point to two halves
   of a buffer, and we ping pong at each iteration by pointing them to a different
   half of the buffer.
-
-
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-
-	////////////////////////////////////
-	// The bulk of the computation    //
-	// This is what will be optimized //
-	////////////////////////////////////
-	/*
-	  STUDENT_TODO: If this is not the baseline feel free to use a different
-			sparse format (COO,CSR,CSC,BCSR) for the matrix-vector
-			product. This operation is also where you will be doing
-			a lot of your optimizations and parallel transformations.
-	*/
+	int thread_num = multiformat_graph_distributed->m > 1024 ? 4 : 2;
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
-		////////////////////////////////////////////////////////////////////////////
-		// Ping pong the buffers by changing the pointers                         //
-		// when t is even x[0..m-1] = buff[0..m-1] and y[0..m-1] = buff[m..2m-1]  //
-		// when t is odd  x[0..m-1] = buff[m..2m-1] and y[0..m-1] = buff[0..m-1]  //
-		////////////////////////////////////////////////////////////////////////////
 		pagerank_data_distributed->x =
 		    &(pagerank_data_distributed->buff[((t + 0) % 2) * multiformat_graph_distributed->m]);
 		pagerank_data_distributed->y =
 		    &(pagerank_data_distributed->buff[((t + 1) % 2) * multiformat_graph_distributed->m]);
 
-		// zero out the output y
 		for (int i = 0; i < multiformat_graph_distributed->m; ++i)
 			pagerank_data_distributed->y[i] = 0.0f;
 
-		////////////////////////////
-		// Matrix vector multiply //
-		////////////////////////////
-		matvec(multiformat_graph_distributed, pagerank_data_distributed);
+		matvec_openmp(multiformat_graph_distributed, pagerank_data_distributed, thread_num);
 
 #if DEBUG
 		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,
 						    pagerank_data_distributed->y);
-
 		printf("diff[%i]: %f\n", t, res);
 #endif
 	}

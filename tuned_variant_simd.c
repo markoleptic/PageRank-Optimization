@@ -41,6 +41,8 @@
 #include "helper.h"
 #include "pagerank.h"
 #include "sparse.h"
+#include "utils.c"
+#include <immintrin.h>
 
 #ifndef COMPUTE_NAME
 #define COMPUTE_NAME baseline
@@ -63,30 +65,247 @@
 #endif
 
 /*
-  This operation performs a matrix vector multiplication, where the matrix is
-  sparse and the vectors are dense. This implementation is using the Coordinate (COO)
-  format, but it can (and should be) changed to a format that best fits the data
-  and the hardware (for example CSR, CSC, BCSR, etc).
-
+Prints row_idx, ind->reg_indices, and ind->simd_indices to indices.txt
 */
-static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
+static void print_indices(int *row_idx, const indices *ind, const int nnz)
 {
-	/*
-	  STUDENT_TODO: If this is not the baseline feel free to use a different
-			sparse format (COO,CSR,CSC,BCSR) for the matrix-vector
-			product. This operation is also where you will be doing
-			a lot of your optimizations and parallel transformations.
-	*/
-
-	// Note: this is a Coordinate (COO) implementation of matrix-vector multiply
-	//       but it could be any other format.
-	for (int cur_pos = 0; cur_pos < multiformat_graph_distributed->graph_view_coo->nnz; ++cur_pos)
+	FILE *file = fopen("indices.txt", "w");
+	fprintf(file, "Regular Indices:\n");
+	for (int i = 0; i < nnz; ++i)
 	{
-		int i = multiformat_graph_distributed->graph_view_coo->row_idx[cur_pos];
-		int j = multiformat_graph_distributed->graph_view_coo->col_idx[cur_pos];
-		float val = multiformat_graph_distributed->graph_view_coo->values[cur_pos];
+		fprintf(file, "%d: %d \n", i, row_idx[i]);
+	}
+	fprintf(file, "Regular Indices:\n");
+	for (int i = 0; i < ind->reg_size; ++i)
+	{
+		fprintf(file, "Start: %d, End: %d\n", ind->reg_indices[i].start, ind->reg_indices[i].end);
+	}
+	fprintf(file, "SIMD Indices:\n");
+	for (int i = 0; i < ind->simd_size; ++i)
+	{
+		fprintf(file, "Start: %d, End: %d\n", ind->simd_indices[i].start, ind->simd_indices[i].end);
+	}
+}
 
-		pagerank_data_distributed->y[i] += val * pagerank_data_distributed->x[j];
+/*
+Prints reference/test arrays side by side in text files
+*/
+static void print_test_diff(multiformat_graph_t *multiformat_graph_distributed,
+			    pagerank_data_t *pagerank_data_distributed)
+{
+	coo_matrix_t *graph = multiformat_graph_distributed->graph_view_coo;
+	float *reference = calloc(multiformat_graph_distributed->m, sizeof(float));
+	FILE *file = fopen("test.txt", "w");
+	for (int cur_pos = 0; cur_pos < graph->nnz; ++cur_pos)
+	{
+		int i = graph->row_idx[cur_pos];
+		int j = graph->col_idx[cur_pos];
+		fprintf(file, "%d %d %d\n", cur_pos, i, j);
+		float val = graph->values[cur_pos];
+		reference[i] += val * pagerank_data_distributed->x[j];
+	}
+	fclose(file);
+	printDistributedDiff(reference, pagerank_data_distributed->y, multiformat_graph_distributed->m,
+			     "test_compare.txt");
+	printDistributedOutput2(reference, pagerank_data_distributed->y, multiformat_graph_distributed->m,
+				"test_compare2.txt");
+	free(reference);
+}
+
+/*
+Adds a new entry into indices->simd_indices or indices->reg_indices
+*/
+static void add_index(indices *in, int bReg)
+{
+	if (bReg == 1)
+	{
+		in->reg_indices = realloc(in->reg_indices, (in->reg_size + 1) * sizeof(reg_index));
+		in->reg_size += 1;
+	}
+	else
+	{
+		in->simd_indices = realloc(in->simd_indices, (in->simd_size + 1) * sizeof(simd_index));
+		in->simd_size += 1;
+	}
+}
+
+/*
+Splits the row_idx array into indices->simd_indices and indices->reg_indices.
+If the value of row_idx does not change for 8 in a row, it is added to
+simd_indices, otherwise its added to reg_indices. */
+/*
+input row_idx array:
+0: 0 --------|
+1: 0         |
+2: 0         |
+3: 0         |simd_indices
+4: 0         |
+5: 0         |
+6: 0         |
+7: 0 --------|
+8: 0 --------|
+9: 0         |
+10: 0        |
+11: 0        |simd_indices
+12: 0        |
+13: 0        |
+14: 0        |
+15: 0 -------|
+16: 0 -------|
+17: 0        |reg_indices
+18: 0 -------|
+19: 1 -------|
+20: 1        |
+21: 1        |
+22: 1        | simd_indices
+23: 1        |
+24: 1        |
+25: 1        |
+26: 1 -------|
+27: 1        |
+28: 1        |
+29: 1        |
+30: 1        | simd_indices
+31: 1        |
+32: 1        |
+33: 1        |
+34: 1 -------|
+35: 1 -------|reg_indices
+
+
+Regular Indices:
+i: 0 Start: 16, End: 19
+i: 1 Start: 35, End: 36
+
+SIMD Indices:
+i: 0 Start: 0, End: 8
+i: 1 Start: 8, End: 16
+i: 2 Start: 19, End: 27
+i: 3 Start: 27, End: 35
+*/
+static void *split_indices(indices *indices, int *row_idx, int nnz)
+{
+	int start = 0;
+	int end = 0;
+	indices->reg_size = 0;
+	indices->simd_size = 0;
+
+	for (int i = 1; i < nnz; ++i)
+	{
+		if (row_idx[i] != row_idx[i - 1])
+		{
+			start = end;
+			end = i;
+			int consecutive = end - start;
+			// Add chunk to reg_indices
+			if (consecutive < 8)
+			{
+				add_index(indices, 1);
+				int idx = indices->reg_size - 1;
+				indices->reg_indices[idx].start = start;
+				indices->reg_indices[idx].end = end;
+			}
+			// Add atleast one chunk of 8 to simd_indices
+			else
+			{
+				int simd_end = (start + (consecutive - (consecutive % 8)));
+				int num_to_add = (simd_end - start) / 8;
+				// Add chunks of 8 to simd_indices until num_to_add
+				for (int j = 0; j < num_to_add; ++j)
+				{
+					add_index(indices, 0);
+					int idx = indices->simd_size - 1;
+					indices->simd_indices[idx].start = start + j * 8;
+					indices->simd_indices[idx].end = indices->simd_indices[idx].start + 8;
+				}
+				// Add the remaining chunk to reg_indices
+				if (consecutive > simd_end - start)
+				{
+					add_index(indices, 1);
+					int reg_idx = indices->reg_size - 1;
+					indices->reg_indices[reg_idx].start =
+					    indices->simd_indices[indices->simd_size - 1].end;
+					indices->reg_indices[reg_idx].end = end;
+				}
+			}
+		}
+	}
+	// Add the section that spans from where the above left off up to in_size
+	add_index(indices, 1);
+	int idx = indices->reg_size - 1;
+	indices->reg_indices[idx].start = end;
+	indices->reg_indices[idx].end = nnz;
+
+#if DEBUG
+	print_indices(row_idx, indices, nnz);
+#endif
+}
+
+/*
+Sums the eight values from a __m256 type into one float value.
+https://stackoverflow.com/questions/13219146/how-to-sum-m256-horizontally
+*/
+static float sum8(__m256 x)
+{
+	// hiQuad = ( x7, x6, x5, x4 )
+	const __m128 hiQuad = _mm256_extractf128_ps(x, 1);
+	// loQuad = ( x3, x2, x1, x0 )
+	const __m128 loQuad = _mm256_castps256_ps128(x);
+	// sumQuad = ( x3 + x7, x2 + x6, x1 + x5, x0 + x4 )
+	const __m128 sumQuad = _mm_add_ps(loQuad, hiQuad);
+	// loDual = ( -, -, x1 + x5, x0 + x4 )
+	const __m128 loDual = sumQuad;
+	// hiDual = ( -, -, x3 + x7, x2 + x6 )
+	const __m128 hiDual = _mm_movehl_ps(sumQuad, sumQuad);
+	// sumDual = ( -, -, x1 + x3 + x5 + x7, x0 + x2 + x4 + x6 )
+	const __m128 sumDual = _mm_add_ps(loDual, hiDual);
+	// lo = ( -, -, -, x0 + x2 + x4 + x6 )
+	const __m128 lo = sumDual;
+	// hi = ( -, -, -, x1 + x3 + x5 + x7 )
+	const __m128 hi = _mm_shuffle_ps(sumDual, sumDual, 0x1);
+	// sum = ( -, -, -, x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7 )
+	const __m128 sum = _mm_add_ss(lo, hi);
+	return _mm_cvtss_f32(sum);
+}
+
+static void baseline_matrix_mul(int start, int end, multiformat_graph_t *graph, pagerank_data_t *pagerank)
+{
+	for (int cur_pos = start; cur_pos < end; ++cur_pos)
+	{
+		int row_idx = graph->graph_view_coo->row_idx[cur_pos];
+		int col_idx = graph->graph_view_coo->col_idx[cur_pos];
+		float val = graph->graph_view_coo->values[cur_pos];
+		pagerank->y[row_idx] += val * pagerank->x[col_idx];
+	}
+}
+
+static void matvec(multiformat_graph_t *graph, pagerank_data_t *pagerank_data)
+{
+	coo_matrix_t *graph_view = graph->graph_view_coo;
+	indices *indices = graph->indices;
+
+	// This loop parallelizes the x array by processing 8 elements at a time
+	for (int index = 0; index < indices->simd_size; ++index)
+	{
+		int cur_pos = indices->simd_indices[index].start;
+		int i = graph_view->row_idx[cur_pos];
+
+		// loads 8 consecutive values from values array, starting at cur_pos
+		__m256 val_vector = _mm256_loadu_ps(&graph_view->values[cur_pos]);
+
+		// loads 8 consecutive column indices from col_idx array, starting at cur_pos
+		__m256i col_idx_vector = _mm256_loadu_si256((__m256i *)(&graph_view->col_idx[cur_pos]));
+
+		// loads 8 consecutive values from the x array, using indices from col_idx_vector
+		__m256 x_values_for_row = _mm256_i32gather_ps(pagerank_data->x, col_idx_vector, sizeof(float));
+
+		// multiply value array by x array, and sum all 8 elements into one float value
+		pagerank_data->y[i] += sum8(_mm256_mul_ps(val_vector, x_values_for_row));
+	}
+	// This loop does everything that couldn't be done in the simd loop
+	for (int i = 0; i < indices->reg_size; ++i)
+	{
+		baseline_matrix_mul(indices->reg_indices[i].start, indices->reg_indices[i].end, graph, pagerank_data);
 	}
 }
 
@@ -94,29 +313,35 @@ static void matvec(multiformat_graph_t *multiformat_graph_distributed, pagerank_
   This function iteratively performs a matrix-vector product to compute
   the PageRank of a graph. Mathematically it is performing:
      x_{n-1} = A^{n} x_{0}
-
   where n is the number of iterations, x_{n-1} is the final ranking and
   x_{0} is a random vector.
-
   In this implementation, we keep two vector x and y that point to two halves
   of a buffer, and we ping pong at each iteration by pointing them to a different
   half of the buffer.
-
-
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
+	// int total = multiformat_graph_distributed->indices->simd_size +
+	// multiformat_graph_distributed->indices->reg_size; float simd =
+	// (float)(multiformat_graph_distributed->indices->simd_size) / total; float reg =
+	// (float)(multiformat_graph_distributed->indices->reg_size) / total;
 
-	////////////////////////////////////
-	// The bulk of the computation    //
-	// This is what will be optimized //
-	////////////////////////////////////
-	/*
-	  STUDENT_TODO: If this is not the baseline feel free to use a different
-			sparse format (COO,CSR,CSC,BCSR) for the matrix-vector
-			product. This operation is also where you will be doing
-			a lot of your optimizations and parallel transformations.
-	*/
+	// int total_reg = 0;
+	// int total_simd = 0;
+	// for (int i = 0; i < multiformat_graph_distributed->indices->simd_size; ++i) {
+	//     total_simd += (multiformat_graph_distributed->indices->simd_indices[i].end -
+	//     multiformat_graph_distributed->indices->simd_indices[i].start);
+	// }
+
+	// for (int i = 0; i < multiformat_graph_distributed->indices->reg_size; ++i) {
+	//     total_reg += (multiformat_graph_distributed->indices->reg_indices[i].end -
+	//     multiformat_graph_distributed->indices->reg_indices[i].start);
+	// }
+	// int total2 = total_simd + total_reg;
+	// float simd2 = (float)(total_simd) / total2;
+	// printf("Size: %d NumEntries:%d Percent SIMD Entries:%f NNZ:%d Percent SIMD NNZ:%f\n",
+	// multiformat_graph_distributed->m, total,  simd, total2,simd2);
+
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
 		////////////////////////////////////////////////////////////////////////////
@@ -128,20 +353,13 @@ static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagera
 		    &(pagerank_data_distributed->buff[((t + 0) % 2) * multiformat_graph_distributed->m]);
 		pagerank_data_distributed->y =
 		    &(pagerank_data_distributed->buff[((t + 1) % 2) * multiformat_graph_distributed->m]);
-
 		// zero out the output y
 		for (int i = 0; i < multiformat_graph_distributed->m; ++i)
 			pagerank_data_distributed->y[i] = 0.0f;
-
-		////////////////////////////
-		// Matrix vector multiply //
-		////////////////////////////
 		matvec(multiformat_graph_distributed, pagerank_data_distributed);
-
 #if DEBUG
 		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,
 						    pagerank_data_distributed->y);
-
 		printf("diff[%i]: %f\n", t, res);
 #endif
 	}
@@ -317,6 +535,13 @@ void DISTRIBUTE_DATA_NAME(int num_vertices, int num_iterations, multiformat_grap
 		multiformat_graph_distributed->graph_view_csr = NULL;
 		multiformat_graph_distributed->graph_view_csc = NULL;
 		multiformat_graph_distributed->graph_view_bcsr = NULL;
+
+		multiformat_graph_distributed->indices = malloc(sizeof(indices));
+		multiformat_graph_distributed->indices->reg_indices = malloc(sizeof(reg_index));
+		multiformat_graph_distributed->indices->simd_indices = malloc(sizeof(simd_index));
+		split_indices(multiformat_graph_distributed->indices,
+			      multiformat_graph_distributed->graph_view_coo->row_idx,
+			      multiformat_graph_distributed->graph_view_coo->nnz);
 	}
 	else
 	{
@@ -385,6 +610,9 @@ void DISTRIBUTED_FREE_NAME(int num_vertices, int num_iterations, multiformat_gra
 		// destroy_csr_matrix(multiformat_graph_distributed->graph_view_csr);
 		// destroy_csc_matrix(multiformat_graph_distributed->graph_view_csc);
 		// destroy_bcsr_matrix(multiformat_graph_distributed->graph_view_bcsr);
+		free(multiformat_graph_distributed->indices->reg_indices);
+		free(multiformat_graph_distributed->indices->simd_indices);
+		free(multiformat_graph_distributed->indices);
 
 		free(multiformat_graph_distributed->degree);
 		free(multiformat_graph_distributed);

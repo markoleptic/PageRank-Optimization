@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import sys, getopt
-
+import os
 
 
 def main():
@@ -33,10 +33,19 @@ def main():
 
 
     for fn in csv_file_list:
+        base_name = os.path.splitext(os.path.basename(fn))[0]
+        legend_label = base_name.split(".")[0]
+        if legend_label.find("remote") != -1:
+            legend_label = base_name[33:]
+        else:
+            legend_label = base_name[31:]
+
+        
+        
         df = pd.read_csv(fn)
         xsize = df['m0']    
         res   = df['result']
-        ax.plot(xsize, res,label=fn)
+        ax.plot(xsize, res,label=legend_label)
         ymax=max(ymax,max(res))
 
     ax.set(ylim=(0, ymax*1.5),
