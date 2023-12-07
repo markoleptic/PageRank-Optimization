@@ -37,7 +37,7 @@ def main():
         base_name = os.path.splitext(os.path.basename(fn))[0]
         legend_label = base_name.split(".")[0]
         if legend_label.find("remote") != -1:
-            legend_label = base_name[33:]
+            legend_label = base_name[32:]
         else:
             legend_label = base_name[31:]
 

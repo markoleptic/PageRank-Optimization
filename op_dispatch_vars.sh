@@ -66,7 +66,7 @@ VAR_REMOTE_MODULE_MATPLOT="matplotlib/3.2.1-foss-2019b-Python-3.8.2"
 ######################################################
 CC=mpicc
 # CFLAGS="-std=c99 -O2"
-CFLAGS="-std=c99 -O3 -mavx2 -mfma -lm -fopenmp"
+CFLAGS="-std=c99 -O2 -mavx2 -mfma -lm -fopenmp"
 #CFLAGS="-std=c99 -O0 -mavx2 -g -mfma -lm"
 
 
