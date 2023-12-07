@@ -7,7 +7,7 @@
 OP_SUBMISSION_VAR01_FILE="tuned_variant_simd.c"
 OP_SUBMISSION_VAR02_FILE="tuned_variant_openmp.c"
 OP_SUBMISSION_VAR03_FILE="tuned_variant_openmp_and_simd.c"  #########################################
-OP_SUBMISSION_VAR04_FILE="tuned_variant_openmp_and_simd_2.c"   # NOTE: If you add variants here, then  #
+OP_SUBMISSION_VAR04_FILE="tuned_variant_csr.c"   # NOTE: If you add variants here, then  #
 OP_SUBMISSION_VAR05_FILE="tuned_variant05_op.c" # append them to the OP_SUBMISSION_LIST #
 # ..                                             #########################################
 #OP_SUBMISSION_VARXX_FILE="tuned_variantXX_op.c"
@@ -18,7 +18,7 @@ OP_SUBMISSION_VAR05_FILE="tuned_variant05_op.c" # append them to the OP_SUBMISSI
 # List of variants to build and run    #
 # Add to this if you add more variants #
 ########################################
-OP_SUBMISSION_LIST="${OP_SUBMISSION_VAR01_FILE} ${OP_SUBMISSION_VAR02_FILE} ${OP_SUBMISSION_VAR03_FILE}" #${OP_SUBMISSION_VAR04_FILE} ${OP_SUBMISSION_VAR05_FILE}"
+OP_SUBMISSION_LIST="${OP_SUBMISSION_VAR01_FILE} ${OP_SUBMISSION_VAR02_FILE} ${OP_SUBMISSION_VAR03_FILE} ${OP_SUBMISSION_VAR04_FILE}" # ${OP_SUBMISSION_VAR05_FILE}"
 
 ##########################################
 # These are the defaults for running the #
