@@ -1,0 +1,5 @@
+Lexie will work on COO to CSR
+Mark will work on the SIMD and OpenMP parallelization
+Quinten will work on GPU optimization
+
+Try to get it done by the Tuesday before it's due so we can review and all begin the writeup
