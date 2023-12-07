@@ -197,7 +197,7 @@ static void *split_indices(indices *indices, int *row_idx, int nnz)
 			start = end;
 			end = i;
 			int consecutive = end - start;
-            // Add chunk to reg_indices
+			// Add chunk to reg_indices
 			if (consecutive < 8)
 			{
 				add_index(indices, 1);
@@ -205,12 +205,12 @@ static void *split_indices(indices *indices, int *row_idx, int nnz)
 				indices->reg_indices[idx].start = start;
 				indices->reg_indices[idx].end = end;
 			}
-            // Add atleast one chunk of 8 to simd_indices
+			// Add atleast one chunk of 8 to simd_indices
 			else
 			{
 				int simd_end = (start + (consecutive - (consecutive % 8)));
 				int num_to_add = (simd_end - start) / 8;
-                // Add chunks of 8 to simd_indices until num_to_add
+				// Add chunks of 8 to simd_indices until num_to_add
 				for (int j = 0; j < num_to_add; ++j)
 				{
 					add_index(indices, 0);
@@ -218,18 +218,19 @@ static void *split_indices(indices *indices, int *row_idx, int nnz)
 					indices->simd_indices[idx].start = start + j * 8;
 					indices->simd_indices[idx].end = indices->simd_indices[idx].start + 8;
 				}
-                // Add the remaining chunk to reg_indices
+				// Add the remaining chunk to reg_indices
 				if (consecutive > simd_end - start)
 				{
 					add_index(indices, 1);
 					int reg_idx = indices->reg_size - 1;
-					indices->reg_indices[reg_idx].start = indices->simd_indices[indices->simd_size - 1].end;
+					indices->reg_indices[reg_idx].start =
+					    indices->simd_indices[indices->simd_size - 1].end;
 					indices->reg_indices[reg_idx].end = end;
 				}
 			}
 		}
 	}
-    // Add the section that spans from where the above left off up to in_size
+	// Add the section that spans from where the above left off up to in_size
 	add_index(indices, 1);
 	int idx = indices->reg_size - 1;
 	indices->reg_indices[idx].start = end;
@@ -283,7 +284,7 @@ static void matvec(multiformat_graph_t *graph, pagerank_data_t *pagerank_data)
 	coo_matrix_t *graph_view = graph->graph_view_coo;
 	indices *indices = graph->indices;
 
-    // This loop parallelizes the x array by processing 8 elements at a time
+	// This loop parallelizes the x array by processing 8 elements at a time
 	for (int index = 0; index < indices->simd_size; ++index)
 	{
 		int cur_pos = indices->simd_indices[index].start;
@@ -301,7 +302,7 @@ static void matvec(multiformat_graph_t *graph, pagerank_data_t *pagerank_data)
 		// multiply value array by x array, and sum all 8 elements into one float value
 		pagerank_data->y[i] += sum8(_mm256_mul_ps(val_vector, x_values_for_row));
 	}
-    // This loop does everything that couldn't be done in the simd loop
+	// This loop does everything that couldn't be done in the simd loop
 	for (int i = 0; i < indices->reg_size; ++i)
 	{
 		baseline_matrix_mul(indices->reg_indices[i].start, indices->reg_indices[i].end, graph, pagerank_data);
@@ -320,27 +321,48 @@ static void matvec(multiformat_graph_t *graph, pagerank_data_t *pagerank_data)
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-    for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
-    {
-        ////////////////////////////////////////////////////////////////////////////
-        // Ping pong the buffers by changing the pointers                         //
-        // when t is even x[0..m-1] = buff[0..m-1] and y[0..m-1] = buff[m..2m-1]  //
-        // when t is odd  x[0..m-1] = buff[m..2m-1] and y[0..m-1] = buff[0..m-1]  //
-        ////////////////////////////////////////////////////////////////////////////
-        pagerank_data_distributed->x =
-            &(pagerank_data_distributed->buff[((t + 0) % 2) * multiformat_graph_distributed->m]);
-        pagerank_data_distributed->y =
-            &(pagerank_data_distributed->buff[((t + 1) % 2) * multiformat_graph_distributed->m]);
-        // zero out the output y
-        for (int i = 0; i < multiformat_graph_distributed->m; ++i)
-            pagerank_data_distributed->y[i] = 0.0f;
-        matvec(multiformat_graph_distributed, pagerank_data_distributed);
+	// int total = multiformat_graph_distributed->indices->simd_size +
+	// multiformat_graph_distributed->indices->reg_size; float simd =
+	// (float)(multiformat_graph_distributed->indices->simd_size) / total; float reg =
+	// (float)(multiformat_graph_distributed->indices->reg_size) / total;
+
+	// int total_reg = 0;
+	// int total_simd = 0;
+	// for (int i = 0; i < multiformat_graph_distributed->indices->simd_size; ++i) {
+	//     total_simd += (multiformat_graph_distributed->indices->simd_indices[i].end -
+	//     multiformat_graph_distributed->indices->simd_indices[i].start);
+	// }
+
+	// for (int i = 0; i < multiformat_graph_distributed->indices->reg_size; ++i) {
+	//     total_reg += (multiformat_graph_distributed->indices->reg_indices[i].end -
+	//     multiformat_graph_distributed->indices->reg_indices[i].start);
+	// }
+	// int total2 = total_simd + total_reg;
+	// float simd2 = (float)(total_simd) / total2;
+	// printf("Size: %d NumEntries:%d Percent SIMD Entries:%f NNZ:%d Percent SIMD NNZ:%f\n",
+	// multiformat_graph_distributed->m, total,  simd, total2,simd2);
+
+	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
+	{
+		////////////////////////////////////////////////////////////////////////////
+		// Ping pong the buffers by changing the pointers                         //
+		// when t is even x[0..m-1] = buff[0..m-1] and y[0..m-1] = buff[m..2m-1]  //
+		// when t is odd  x[0..m-1] = buff[m..2m-1] and y[0..m-1] = buff[0..m-1]  //
+		////////////////////////////////////////////////////////////////////////////
+		pagerank_data_distributed->x =
+		    &(pagerank_data_distributed->buff[((t + 0) % 2) * multiformat_graph_distributed->m]);
+		pagerank_data_distributed->y =
+		    &(pagerank_data_distributed->buff[((t + 1) % 2) * multiformat_graph_distributed->m]);
+		// zero out the output y
+		for (int i = 0; i < multiformat_graph_distributed->m; ++i)
+			pagerank_data_distributed->y[i] = 0.0f;
+		matvec(multiformat_graph_distributed, pagerank_data_distributed);
 #if DEBUG
-        float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m,
-                            pagerank_data_distributed->x, pagerank_data_distributed->y);
-        printf("diff[%i]: %f\n", t, res);
+		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,
+						    pagerank_data_distributed->y);
+		printf("diff[%i]: %f\n", t, res);
 #endif
-    }
+	}
 }
 
 /*

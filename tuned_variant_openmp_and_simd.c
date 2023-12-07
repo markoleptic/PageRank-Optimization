@@ -285,11 +285,9 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 	indices *indices = graph->indices;
 
 	int m = graph->m;
-	float *y_accumulated = (float *)malloc(m * sizeof(float));
-	for (int i = 0; i < m; ++i)
-		y_accumulated[i] = 0.0f;
+	float *y_accumulated = (float *)calloc(m, sizeof(float));
 
-#pragma omp parallel for num_threads(num_threads) reduction(+:y_accumulated[:m])
+#pragma omp parallel for num_threads(num_threads) reduction(+ : y_accumulated[:m])
 	// This loop parallelizes the x array by processing 8 elements at a time
 	for (int index = 0; index < indices->simd_size; ++index)
 	{
@@ -306,20 +304,16 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 		__m256 x_values_for_row = _mm256_i32gather_ps(pagerank_data->x, col_idx_vector, sizeof(float));
 
 		// multiply value array by x array, and sum all 8 elements into one float value
-		// y_accumulated[i] += sum8(_mm256_mul_ps(val_vector, x_values_for_row));
 		y_accumulated[i] += sum8(_mm256_mul_ps(val_vector, x_values_for_row));
 	}
-#pragma omp parallel for num_threads(num_threads) reduction(+:y_accumulated[:m])
+#pragma omp parallel for num_threads(num_threads) reduction(+ : y_accumulated[:m])
 	// This loop does everything that couldn't be done in the simd loop
 	for (int i = 0; i < indices->reg_size; ++i)
 	{
 		baseline_matrix_mul(indices->reg_indices[i].start, indices->reg_indices[i].end, graph, pagerank_data,
 				    y_accumulated);
 	}
-
-	for (int i = 0; i < m; ++i)
-		pagerank_data->y[i] = y_accumulated[i];
-
+	memcpy(pagerank_data->y, y_accumulated, m * sizeof(float));
 	free(y_accumulated);
 }
 
@@ -335,7 +329,7 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-	int num_threads = 4;
+	int num_threads = 8;
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
 		////////////////////////////////////////////////////////////////////////////

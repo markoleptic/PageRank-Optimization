@@ -285,9 +285,7 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 	indices *indices = graph->indices;
 
     int m = graph->m;
-	float *y_accumulated = (float *)malloc(m * sizeof(float));
-	for (int i = 0; i < m; ++i)
-		y_accumulated[i] = 0.0f;
+    float *y_accumulated = (float *)calloc(m, sizeof(float));
 
 #pragma omp parallel num_threads(num_threads) reduction(+:y_accumulated[:m])
 	{
@@ -318,11 +316,8 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 					    pagerank_data, y_accumulated);
 		}
 	}
-    for (int i = 0; i < m; ++i)
-    {
-        pagerank_data->y[i] = y_accumulated[i];
-    }
-    free(y_accumulated);
+    memcpy(pagerank_data->y, y_accumulated, m * sizeof(float));
+	free(y_accumulated);
 }
 
 /*
