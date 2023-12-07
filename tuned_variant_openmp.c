@@ -99,7 +99,7 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-	int thread_num = multiformat_graph_distributed->m > 1024 ? 4 : 2;
+	int thread_num = 4;
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
 		pagerank_data_distributed->x =

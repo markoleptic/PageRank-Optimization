@@ -33,6 +33,7 @@ def main():
 
 
     for fn in csv_file_list:
+        print(fn)
         base_name = os.path.splitext(os.path.basename(fn))[0]
         legend_label = base_name.split(".")[0]
         if legend_label.find("remote") != -1:
