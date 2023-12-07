@@ -329,7 +329,8 @@ static void matvec_openmp(multiformat_graph_t *graph, pagerank_data_t *pagerank_
 */
 static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagerank_data_t *pagerank_data_distributed)
 {
-	int num_threads = 4;
+    int thread_num = 4;
+
 	for (int t = 0; t < pagerank_data_distributed->num_iterations; ++t)
 	{
 		////////////////////////////////////////////////////////////////////////////
@@ -344,7 +345,7 @@ static void page_rank(multiformat_graph_t *multiformat_graph_distributed, pagera
 		// zero out the output y
 		// for (int i = 0; i < multiformat_graph_distributed->m; ++i)
 		//	pagerank_data_distributed->y[i] = 0.0f;
-		matvec_openmp(multiformat_graph_distributed, pagerank_data_distributed, num_threads);
+		matvec_openmp(multiformat_graph_distributed, pagerank_data_distributed, thread_num);
 #if DEBUG
 		float res = max_pair_wise_diff_vect(multiformat_graph_distributed->m, pagerank_data_distributed->x,
 						    pagerank_data_distributed->y);
