@@ -23,10 +23,10 @@ void print_float_mem(char *name, int vlen, float *src)
   printf("%s = [ ",name);
   for( int vid = 0; vid < vlen; ++vid )
     {
-  //     if ( src[vid] < 0.0f )
-	// printf( " x, ", src[vid] );
-  //     else
-	// printf( "%2.f, ", src[vid] );
+      if ( src[vid] < 0.0f )
+	printf( " x, " /*src[vid]*/ );
+      else
+	printf( "%2.f, ", src[vid] );
     }
     printf("]\n");
 }
@@ -41,10 +41,10 @@ void print_float_matrix_mem(char *name, int m, int n, int rs, int cs, float *src
     {
       for( int j = 0; j < n; ++j )
 	{
-	  //if ( src[i*cs + j*rs] < 0.0f )
-	    //printf( " x, ", src[i*cs + j*rs] );
-	  //else
-	    //printf( "%2.f, ", src[i*cs + j*rs] );
+	  if ( src[i*cs + j*rs] < 0.0f )
+	    printf( " x, " /*src[i*cs + j*rs] */);
+	  else
+	    printf( "%2.f, ", src[i*cs + j*rs] );
 	}
       printf("\n");
     }

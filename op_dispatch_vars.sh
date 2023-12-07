@@ -5,9 +5,9 @@
 # Replace the filenames with your variants #
 ############################################
 OP_SUBMISSION_VAR01_FILE="tuned_variant01_op.c"
-OP_SUBMISSION_VAR02_FILE="lexietodo.c"
+OP_SUBMISSION_VAR02_FILE="tuned_variant02_op.c"
 OP_SUBMISSION_VAR03_FILE="tuned_variant03_op.c"  #########################################
-OP_SUBMISSION_VAR04_FILE="tuned_variant03_op.c"  # NOTE: If you add variants here, then  #
+OP_SUBMISSION_VAR04_FILE="tuned_variant04_op.c"  # NOTE: If you add variants here, then  #
 OP_SUBMISSION_VAR05_FILE="tuned_variant05_op.c"  # append them to the OP_SUBMISSION_LIST #
 # ..                                             #########################################
 #OP_SUBMISSION_VARXX_FILE="tuned_variantXX_op.c"
