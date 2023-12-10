@@ -14,5 +14,3 @@ This repository implements various parallel optimization techniques for the Page
 - **tuned_variant_baseline.c:** The starting point for all variants.
 - **writeup.pdf:** Contains a full description and results of the implemented optimization techniques.
 
-Feel free to explore each file for detailed implementation and optimization strategies.
-
